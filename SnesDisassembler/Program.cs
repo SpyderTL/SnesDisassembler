@@ -17,6 +17,8 @@ namespace SnesDisassembler
 		static string Line = string.Empty;
 		static Stack<int> Stack = new Stack<int>();
 		static byte Flags;
+		static string Instruction = string.Empty;
+		static string Address = string.Empty;
 
 		static void Main(string[] args)
 		{
@@ -52,6 +54,10 @@ namespace SnesDisassembler
 
 				switch (fields[0])
 				{
+					case "a":
+						Flags ^= 0x20;
+						break;
+
 					case "b":
 						Current = Branch;
 						break;
@@ -61,17 +67,153 @@ namespace SnesDisassembler
 						Current = Branch;
 						break;
 
+					case "s":
+						Scan();
+						break;
+
+					case "t":
+						var address = Current;
+						var columns = 16;
+						var rows = 16;
+
+						if (fields.Length > 1)
+							int.TryParse(fields[1], System.Globalization.NumberStyles.HexNumber, null, out address);
+
+						if (fields.Length > 2)
+							int.TryParse(fields[2], out columns);
+
+						if (fields.Length > 3)
+							int.TryParse(fields[3], out rows);
+
+						Table(address, columns, rows);
+						break;
+
+					case "x":
+						Flags ^= 0x10;
+						break;
+
 					default:
-						int.TryParse(fields[0], System.Globalization.NumberStyles.HexNumber, null, out var address);
+						int.TryParse(fields[0], System.Globalization.NumberStyles.HexNumber, null, out address);
 						Current = address;
 						break;
 				}
 			}
 		}
 
+		private static void Table(int address, int columns, int rows)
+		{
+			for (var row = 0; row < rows; row++)
+			{
+				for (var column = 0; column < columns; column++)
+				{
+					if (column != 0)
+						Console.Write(" ");
+
+					Console.Write(Data[address + (row * columns) + column].ToString("X2"));
+				}
+
+				Console.WriteLine();
+			}
+		}
+
+		private static void Scan()
+		{
+			var text = Text;
+			var current = Current;
+			var flags = Flags;
+			var next = Next;
+			var branch = Branch;
+			var stack = Stack;
+
+			var jumps = new List<int>();
+			var calls = new List<int>();
+			var branches = new List<int>();
+			var reads = new List<string>();
+			var writes = new List<string>();
+
+			var newBranches = new Stack<int>();
+			var oldBranches = new List<int>();
+
+			var done = false;
+
+			while (!done)
+			{
+				Current = Next;
+
+				Disassemble();
+
+				switch (Instruction)
+				{
+					case "Jump":
+						jumps.Add(Next);
+
+						if (oldBranches.Contains(Next) ||
+							newBranches.Contains(Next))
+						{
+							if (newBranches.Count == 0)
+								done = true;
+							else
+							{
+								Next = newBranches.Pop();
+								oldBranches.Add(Next);
+							}
+						}
+						else
+							newBranches.Push(Next);
+						break;
+
+					case "Call":
+						calls.Add(Branch);
+						break;
+
+					case "Branch":
+						if (oldBranches.Contains(Branch) ||
+							newBranches.Contains(Branch))
+							newBranches.Push(Branch);
+
+						break;
+
+					case "Return":
+						if (newBranches.Count == 0)
+							done = true;
+						else
+						{
+							Next = newBranches.Pop();
+							oldBranches.Add(Next);
+						}
+						break;
+
+					case "Read":
+						reads.Add(Address);
+						break;
+
+					case "Write":
+						writes.Add(Address);
+						break;
+				}
+			}
+
+			Console.WriteLine("Calls: \r\n" + string.Join(Environment.NewLine, calls.Distinct().OrderBy(x => x).Select(x => x.ToString("X6"))));
+			Console.WriteLine();
+			Console.WriteLine("Reads: \r\n" + string.Join(Environment.NewLine, reads.Distinct().OrderBy(x => x)));
+			Console.WriteLine();
+			Console.WriteLine("Writes: \r\n" + string.Join(Environment.NewLine, writes.Distinct().OrderBy(x => x)));
+			Console.WriteLine();
+
+			Text = text;
+			Current = current;
+			Flags = flags;
+			Next = next;
+			Branch = branch;
+			Stack = stack;
+		}
+
 		private static void Disassemble()
 		{
 			var instruction = Data[Current];
+
+			Instruction = string.Empty;
+			Address = string.Empty;
 
 			switch (instruction)
 			{
@@ -86,12 +228,16 @@ namespace SnesDisassembler
 				case 0x03:
 					var address = (int)Data[Current + 1];
 					Text = Current.ToString("X6") + " OrAccumulatorWithStackRelativeAddress " + address.ToString("X2");
+					Instruction = "Read";
+					Address = "S+" + address.ToString("X2");
 					Next = Current + 2;
 					break;
 
 				case 0x06:
 					address = (int)Data[Current + 1];
 					Text = Current.ToString("X6") + " ShiftDirectAddressLeft " + address.ToString("X2");
+					Instruction = "Write";
+					Address = address.ToString("X2");
 					Next = Current + 2;
 					break;
 
@@ -125,8 +271,17 @@ namespace SnesDisassembler
 				case 0x10:
 					address = Current + 2 + (sbyte)Data[Current + 1];
 					Text = Current.ToString("X6") + " BranchToRelativeIfPositive " + address.ToString("X6");
+					Instruction = "Branch";
 					Next = Current + 2;
 					Branch = address;
+					break;
+
+				case 0x15:
+					address = Data[Current + 1];
+					Text = Current.ToString("X6") + " OrAccumulatorWithDirectAddressPlusXIndex " + address.ToString("X2");
+					Instruction = "Read";
+					Address = address.ToString("X2") + "+X";
+					Next = Current + 2;
 					break;
 
 				case 0x18:
@@ -142,21 +297,29 @@ namespace SnesDisassembler
 				case 0x20:
 					address = Data[Current + 1] | (Data[Current + 2] << 8) | (Current & 0xff0000);
 					Text = Current.ToString("X6") + " CallAbsoluteAddress " + address.ToString("X6");
+					Instruction = "Call";
+					Address = address.ToString("X6");
 					Next = Current + 3;
 					Branch = address;
+					System.Diagnostics.Debug.WriteLine(address.ToString("X6"));
 					break;
 
 				case 0x21:
 					address = Data[Current + 1];
 					Text = Current.ToString("X6") + " AndAccumulatorWithDirectAddressPlusXIndexPointer " + address.ToString("X2");
+					Instruction = "Read";
+					Address = "[" + address.ToString("X2") + "+X]";
 					Next = Current + 2;
 					break;
 
 				case 0x22:
 					address = Data[Current + 1] | (Data[Current + 2] << 8) | (Data[Current + 3] << 16);
 					Text = Current.ToString("X6") + " CallAbsoluteLongAddress " + address.ToString("X6");
+					Instruction = "Call";
+					Address = address.ToString("X6");
 					Next = Current + 4;
 					Branch = address;
+					System.Diagnostics.Debug.WriteLine(address.ToString("X6"));
 					break;
 
 				case 0x28:
@@ -188,6 +351,8 @@ namespace SnesDisassembler
 				case 0x30:
 					address = Current + 2 + (sbyte)Data[Current + 1];
 					Text = Current.ToString("X6") + " BranchToRelativeIfNegative " + address.ToString("X6");
+					Instruction = "Branch";
+					Address = address.ToString("X6");
 					Next = Current + 2;
 					Branch = address;
 					break;
@@ -195,6 +360,8 @@ namespace SnesDisassembler
 				case 0x32:
 					address = (int)Data[Current + 1];
 					Text = Current.ToString("X6") + " AndAccumulatorWithDirectAddressPointer " + address.ToString("X2");
+					Instruction = "Read";
+					Address = "[" + address.ToString("X2") + "]";
 					Next = Current + 2;
 					break;
 
@@ -204,8 +371,10 @@ namespace SnesDisassembler
 					break;
 
 				case 0x39:
-					address = Data[Current + 1] | Data[Current + 2] << 8;
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
 					Text = Current.ToString("X6") + " AndAccumulatorWithAbsoluteAddressPlusYIndex " + address.ToString("X4");
+					Instruction = "Read";
+					Address = address.ToString("X4") + "+Y";
 					Next = Current + 3;
 					break;
 
@@ -215,24 +384,44 @@ namespace SnesDisassembler
 					break;
 
 				case 0x3d:
-					address = Data[Current + 1] | Data[Current + 2] << 8;
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
 					Text = Current.ToString("X6") + " AndAccumulatorWithAbsoluteAddressPlusXIndex " + address.ToString("X4");
+					Instruction = "Read";
+					Address = address.ToString("X4") + "+X";
 					Next = Current + 3;
 					break;
 
 				case 0x40:
 					Text = Current.ToString("X6") + " ReturnFromInterrupt";
+					Instruction = "Return";
 					break;
 
 				case 0x46:
 					address = Data[Current + 1];
 					Text = Current.ToString("X6") + " ShiftDirectAddressRight " + address.ToString("X2");
+					Instruction = "Write";
+					Address = address.ToString("X2");
 					Next = Current + 2;
 					break;
 
 				case 0x48:
 					Text = Current.ToString("X6") + " PushAccumulator";
 					Next = Current + 1;
+					break;
+
+				case 0x49:
+					if ((Flags & 0x20) == 0)
+					{
+						value = Data[Current + 1] | Data[Current + 2] << 8;
+						Text = Current.ToString("X6") + " ExclusiveOrAccumulatorWithImmediate " + value.ToString("X4");
+						Next = Current + 3;
+					}
+					else
+					{
+						value = Data[Current + 1];
+						Text = Current.ToString("X6") + " ExclusiveOrAccumulatorWithImmediate " + value.ToString("X2");
+						Next = Current + 2;
+					}
 					break;
 
 				case 0x4a:
@@ -243,6 +432,14 @@ namespace SnesDisassembler
 				case 0x4b:
 					Text = Current.ToString("X6") + " PushProgramBank";
 					Next = Current + 1;
+					break;
+
+				case 0x4c:
+					address = Data[Current + 1] | (Data[Current + 2] << 8) | Current & 0xff0000;
+					Text = Current.ToString("X6") + " JumpToAbsoluteAddress " + address.ToString("X6");
+					Instruction = "Jump";
+					Address = address.ToString("X6");
+					Next = address;
 					break;
 
 				case 0x58:
@@ -256,47 +453,53 @@ namespace SnesDisassembler
 					break;
 
 				case 0x5b:
-					Text = Current.ToString("X6") + " CopyAccumulatorToDirectPage";
+					Text = Current.ToString("X6") + " CopyAccumulatorToDirectPageRegister";
 					Next = Current + 1;
 					break;
 
 				case 0x5c:
-					address = Data[Current + 1] | Data[Current + 2] << 8 | Data[Current + 3] << 16;
+					address = Data[Current + 1] | (Data[Current + 2] << 8) | Data[Current + 3] << 16;
 					Text = Current.ToString("X6") + " JumpToAbsoluteLongAddress " + address.ToString("X6");
+					Instruction = "Jump";
+					Address = address.ToString("X6");
 					Next = address;
 					break;
 
 				case 0x60:
 					Text = Current.ToString("X6") + " ReturnToCaller";
-					Next = Stack.Pop();
-					break;
-
-				case 0x6b:
-					Text = Current.ToString("X6") + " ReturnToLongCaller";
-					Next = Stack.Pop();
+					Instruction = "Return";
+					Next = Stack.Count != 0 ? Stack.Pop() : Current;
 					break;
 
 				case 0x63:
 					address = Data[Current + 1];
 					Text = Current.ToString("X6") + " AddStackRelativeAddressToAccumulator " + address.ToString("X2");
+					Instruction = "Read";
+					Address = "S+" + address.ToString("X6");
 					Next = Current + 2;
 					break;
 
 				case 0x64:
 					address = Data[Current + 1];
 					Text = Current.ToString("X6") + " SetDirectAddressToZero " + address.ToString("X2");
+					Instruction = "Write";
+					Address = address.ToString("X2");
 					Next = Current + 2;
 					break;
 
 				case 0x65:
 					address = Data[Current + 1];
 					Text = Current.ToString("X6") + " AddDirectAddressToAccumulator " + address.ToString("X2");
+					Instruction = "Read";
+					Address = address.ToString("X2");
 					Next = Current + 2;
 					break;
 
 				case 0x67:
 					address = Data[Current + 1];
 					Text = Current.ToString("X6") + " AddDirectAddressLongPointerToAccumulator " + address.ToString("X2");
+					Instruction = "Read";
+					Address = "[" + address.ToString("X2") + "]";
 					Next = Current + 2;
 					break;
 
@@ -320,6 +523,41 @@ namespace SnesDisassembler
 					}
 					break;
 
+				case 0x6a:
+					Text = Current.ToString("X6") + " RotateAccumulatorRight";
+					Next = Current + 1;
+					break;
+
+				case 0x6b:
+					Text = Current.ToString("X6") + " ReturnToLongCaller";
+					Instruction = "Return";
+					Next = Stack.Count != 0 ? Stack.Pop() : Current;
+					break;
+
+				case 0x6d:
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
+					Text = Current.ToString("X6") + " AddAbsoluteAddressToAccumulator " + address.ToString("X4");
+					Instruction = "Read";
+					Address = address.ToString("X4");
+					Next = Current + 3;
+					break;
+
+				case 0x74:
+					address = Data[Current + 1];
+					Text = Current.ToString("X6") + " SetDirectAddressPlusXIndexToZero " + address.ToString("X2");
+					Instruction = "Write";
+					Address = address.ToString("X2") + "+X";
+					Next = Current + 2;
+					break;
+
+				case 0x75:
+					address = Data[Current + 1];
+					Text = Current.ToString("X6") + " AddDirectAddressPlusXIndexToAccumulator " + address.ToString("X2");
+					Instruction = "Read";
+					Address = address.ToString("X2") + "+X";
+					Next = Current + 2;
+					break;
+
 				case 0x78:
 					Text = Current.ToString("X6") + " SetInterruptDisableFlag";
 					Next = Current + 1;
@@ -333,30 +571,40 @@ namespace SnesDisassembler
 				case 0x7f:
 					address = Data[Current + 1] | Data[Current + 2] << 8 | Data[Current + 3] << 16;
 					Text = Current.ToString("X6") + " AddAbsoluteLongAddressPlusXIndexToAccumulator " + address.ToString("X6");
+					Instruction = "Read";
+					Address = address.ToString("X6") + "+X";
 					Next = Current + 4;
 					break;
 
 				case 0x80:
 					address = Current + 2 + (sbyte)Data[Current + 1];
 					Text = Current.ToString("X6") + " JumpToRelative " + address.ToString("X6");
+					Instruction = "Jump";
+					Address = address.ToString("X6");
 					Next = address;
 					break;
 
 				case 0x82:
 					address = Current + 3 + BitConverter.ToInt16(Data, Current + 1);
 					Text = Current.ToString("X6") + " JumpToRelativeLong " + address.ToString("X6");
+					Instruction = "Jump";
+					Address = address.ToString("X6");
 					Next = address;
 					break;
 
 				case 0x85:
 					address = Data[Current + 1];
 					Text = Current.ToString("X6") + " CopyAccumulatorToDirectAddress " + address.ToString("X2");
+					Instruction = "Write";
+					Address = address.ToString("X2");
 					Next = Current + 2;
 					break;
 
 				case 0x86:
 					address = Data[Current + 1];
 					Text = Current.ToString("X6") + " CopyXIndexToDirectAddress " + address.ToString("X2");
+					Instruction = "Write";
+					Address = address.ToString("X2");
 					Next = Current + 2;
 					break;
 
@@ -376,40 +624,70 @@ namespace SnesDisassembler
 					Next = Current + 1;
 					break;
 
+				case 0x8b:
+					Text = Current.ToString("X6") + " PushDataBank";
+					Next = Current + 1;
+					break;
+
 				case 0x8c:
-					address = Data[Current + 1] | Data[Current + 2] << 8;
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
 					Text = Current.ToString("X6") + " CopyYIndexToAbsoluteAddress " + address.ToString("X4");
+					Instruction = "Write";
+					Address = address.ToString("X4");
 					Next = Current + 3;
 					break;
 
 				case 0x8d:
-					address = Data[Current + 1] | Data[Current + 2] << 8;
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
 					Text = Current.ToString("X6") + " CopyAccumulatorToAbsoluteAddress " + address.ToString("X4");
+					Instruction = "Write";
+					Address = address.ToString("X4");
 					Next = Current + 3;
 					break;
 
 				case 0x8e:
-					address = Data[Current + 1] | Data[Current + 2] << 8;
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
 					Text = Current.ToString("X6") + " CopyXIndexToAbsoluteAddress " + address.ToString("X4");
+					Instruction = "Write";
+					Address = address.ToString("X4");
 					Next = Current + 3;
 					break;
 
 				case 0x8f:
 					address = Data[Current + 1] | Data[Current + 2] << 8 | Data[Current + 3] << 16;
 					Text = Current.ToString("X6") + " CopyAccumulatorToAbsoluteLongAddress " + address.ToString("X6");
+					Instruction = "Write";
+					Address = address.ToString("X6");
 					Next = Current + 4;
 					break;
 
 				case 0x90:
 					address = Current + 2 + (sbyte)Data[Current + 1];
 					Text = Current.ToString("X6") + " BranchToRelativeIfLessThan " + address.ToString("X6");
+					Instruction = "Branch";
 					Next = Current + 2;
 					Branch = address;
+					break;
+
+				case 0x95:
+					address = Data[Current + 1];
+					Text = Current.ToString("X6") + " CopyAccumulatorToDirectAddressPlusXIndex " + address.ToString("X2");
+					Instruction = "Write";
+					Address = address.ToString("X2");
+					Next = Current + 2;
 					break;
 
 				case 0x98:
 					Text = Current.ToString("X6") + " CopyYIndexToAccumulator";
 					Next = Current + 1;
+					break;
+
+				case 0x99:
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
+					Text = Current.ToString("X6") + " CopyAccumulatorToAbsoluteAddressPlusYIndex " + address.ToString("X4");
+					Instruction = "Write";
+					Address = address.ToString("X4") + "+Y";
+					Next = Current + 3;
 					break;
 
 				case 0x9a:
@@ -423,9 +701,35 @@ namespace SnesDisassembler
 					break;
 
 				case 0x9c:
-					address = Data[Current + 1] | Data[Current + 2] << 8;
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
 					Text = Current.ToString("X6") + " SetAbsoluteAddressToZero " + address.ToString("X4");
+					Instruction = "Write";
+					Address = address.ToString("X4");
 					Next = Current + 3;
+					break;
+
+				case 0x9d:
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
+					Text = Current.ToString("X6") + " CopyAccumulatorToAbsoluteAddressPlusXIndex " + address.ToString("X4");
+					Instruction = "Write";
+					Address = address.ToString("X4") + "+X";
+					Next = Current + 3;
+					break;
+
+				case 0x9e:
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
+					Text = Current.ToString("X6") + " SetAbsoluteAddressPlusXIndexToZero " + address.ToString("X4");
+					Instruction = "Write";
+					Address = address.ToString("X4") + "+X";
+					Next = Current + 3;
+					break;
+
+				case 0x9f:
+					address = Data[Current + 1] | Data[Current + 2] << 8 | Data[Current + 3] << 16;
+					Text = Current.ToString("X6") + " CopyAccumulatorToAbsoluteLongAddressPlusXIndex " + address.ToString("X6");
+					Instruction = "Write";
+					Address = address.ToString("X6") + "+X";
+					Next = Current + 4;
 					break;
 
 				case 0xa0:
@@ -461,25 +765,22 @@ namespace SnesDisassembler
 				case 0xa5:
 					address = Data[Current + 1];
 					Text = Current.ToString("X6") + " CopyDirectAddressToAccumulator " + address.ToString("X2");
+					Instruction = "Read";
+					Address = address.ToString("X2");
 					Next = Current + 2;
 					break;
 
 				case 0xa6:
 					address = Data[Current + 1];
 					Text = Current.ToString("X6") + " CopyDirectAddressToXIndex " + address.ToString("X2");
+					Instruction = "Read";
+					Address = address.ToString("X2");
 					Next = Current + 2;
 					break;
 
-				case 0xac:
-					address = Data[Current + 1] | Data[Current + 2] << 8;
-					Text = Current.ToString("X6") + " CopyAbsoluteAddressToYIndex " + address.ToString("X4");
-					Next = Current + 3;
-					break;
-
-				case 0xaf:
-					address = Data[Current + 1] | Data[Current + 2] << 8 | Data[Current + 3] << 16;
-					Text = Current.ToString("X6") + " CopyAbsoluteLongAddressToAccumulator " + address.ToString("X6");
-					Next = Current + 4;
+				case 0xa8:
+					Text = Current.ToString("X6") + " CopyAccumulatorToYIndex";
+					Next = Current + 1;
 					break;
 
 				case 0xa9:
@@ -507,21 +808,42 @@ namespace SnesDisassembler
 					Next = Current + 1;
 					break;
 
-				case 0xad:
+				case 0xac:
 					address = Data[Current + 1] | Data[Current + 2] << 8;
+					Text = Current.ToString("X6") + " CopyAbsoluteAddressToYIndex " + address.ToString("X4");
+					Instruction = "Read";
+					Address = address.ToString("X4");
+					Next = Current + 3;
+					break;
+
+				case 0xad:
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
 					Text = Current.ToString("X6") + " CopyAbsoluteAddressToAccumulator " + address.ToString("X4");
+					Instruction = "Read";
+					Address = address.ToString("X4");
 					Next = Current + 3;
 					break;
 
 				case 0xae:
-					address = Data[Current + 1] | Data[Current + 2] << 8;
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
 					Text = Current.ToString("X6") + " CopyAbsoluteAddressToXIndex " + address.ToString("X4");
+					Instruction = "Read";
+					Address = address.ToString("X4");
 					Next = Current + 3;
+					break;
+
+				case 0xaf:
+					address = Data[Current + 1] | Data[Current + 2] << 8 | Data[Current + 3] << 16;
+					Text = Current.ToString("X6") + " CopyAbsoluteLongAddressToAccumulator " + address.ToString("X6");
+					Instruction = "Read";
+					Address = address.ToString("X6");
+					Next = Current + 4;
 					break;
 
 				case 0xb0:
 					address = Current + 2 + (sbyte)Data[Current + 1];
 					Text = Current.ToString("X6") + " BranchToRelativeIfGreaterOrEqual " + address.ToString("X6");
+					Instruction = "Branch";
 					Next = Current + 2;
 					Branch = address;
 					break;
@@ -529,7 +851,17 @@ namespace SnesDisassembler
 				case 0xb5:
 					address = Data[Current + 1];
 					Text = Current.ToString("X6") + " CopyDirectAddressPlusXIndexToAccumulator " + address.ToString("X2");
+					Instruction = "Read";
+					Address = address.ToString("X2") + "+X";
 					Next = Current + 2;
+					break;
+
+				case 0xb9:
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
+					Text = Current.ToString("X6") + " CopyAbsoluteAddressPlusYIndexToAccumulator " + address.ToString("X4");
+					Instruction = "Read";
+					Address = address.ToString("X4") + "+Y";
+					Next = Current + 3;
 					break;
 
 				case 0xbb:
@@ -538,14 +870,18 @@ namespace SnesDisassembler
 					break;
 
 				case 0xbd:
-					address = Data[Current + 1] | Data[Current + 2] << 8;
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
 					Text = Current.ToString("X6") + " CopyAbsoluteAddressPlusXIndexToAccumulator " + address.ToString("X4");
+					Instruction = "Read";
+					Address = address.ToString("X4") + "+X";
 					Next = Current + 3;
 					break;
 
 				case 0xbf:
 					address = Data[Current + 1] | Data[Current + 2] << 8 | Data[Current + 3] << 16;
 					Text = Current.ToString("X6") + " CopyAbsoluteLongAddressPlusXIndexToAccumulator " + address.ToString("X6");
+					Instruction = "Read";
+					Address = address.ToString("X6") + "+X";
 					Next = Current + 4;
 					break;
 
@@ -574,6 +910,8 @@ namespace SnesDisassembler
 				case 0xc5:
 					address = Data[Current + 1];
 					Text = Current.ToString("X6") + " CompareAccumulatorToDirectAddress " + address.ToString("X2");
+					Instruction = "Read";
+					Address = address.ToString("X2");
 					Next = Current + 2;
 					break;
 
@@ -598,20 +936,25 @@ namespace SnesDisassembler
 					break;
 
 				case 0xcd:
-					address = Data[Current + 1] | Data[Current + 2] << 8;
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
 					Text = Current.ToString("X6") + " CompareAccumulatorToAbsoluteAddress " + address.ToString("X4");
+					Instruction = "Read";
+					Address = address.ToString("X4");
 					Next = Current + 3;
 					break;
 
 				case 0xce:
-					address = Data[Current + 1] | Data[Current + 2] << 8;
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
 					Text = Current.ToString("X6") + " DecrementAbsoluteAddress " + address.ToString("X4");
+					Instruction = "Write";
+					Address = address.ToString("X4");
 					Next = Current + 3;
 					break;
 
 				case 0xd0:
 					address = Current + 2 + (sbyte)Data[Current + 1];
 					Text = Current.ToString("X6") + " BranchToRelativeIfNotEqual " + address.ToString("X6");
+					Instruction = "Branch";
 					Next = Current + 2;
 					Branch = address;
 					break;
@@ -649,6 +992,14 @@ namespace SnesDisassembler
 					Flags |= (byte)value;
 					break;
 
+				case 0xe5:
+					address = Data[Current + 1];
+					Text = Current.ToString("X6") + " SubtractDirectAddressFromAccumulator " + address.ToString("X2");
+					Instruction = "Read";
+					Address = address.ToString("X2");
+					Next = Current + 2;
+					break;
+
 				case 0xe8:
 					Text = Current.ToString("X6") + " IncrementXIndex";
 					Next = Current + 1;
@@ -675,20 +1026,25 @@ namespace SnesDisassembler
 					break;
 
 				case 0xec:
-					address = Data[Current + 1] | Data[Current + 2] << 8;
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
 					Text = Current.ToString("X6") + " CompareIndexXToAbsoluteAddress " + address.ToString("X4");
+					Instruction = "Read";
+					Address = address.ToString("X4");
 					Next = Current + 3;
 					break;
 
 				case 0xee:
-					address = Data[Current + 1] | Data[Current + 2] << 8;
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
 					Text = Current.ToString("X6") + " IncrementAbsoluteAddress " + address.ToString("X4");
+					Instruction = "Write";
+					Address = address.ToString("X4");
 					Next = Current + 3;
 					break;
 
 				case 0xf0:
 					address = Current + 2 + (sbyte)Data[Current + 1];
 					Text = Current.ToString("X6") + " BranchToRelativeIfEqual " + address.ToString("X6");
+					Instruction = "Branch";
 					Next = Current + 2;
 					Branch = address;
 					break;
@@ -702,6 +1058,8 @@ namespace SnesDisassembler
 				case 0xf5:
 					address = Data[Current + 1];
 					Text = Current.ToString("X6") + " SubtractDirectAddressPlusXIndexFromAccumulator " + address.ToString("X2");
+					Instruction = "Read";
+					Address = address.ToString("X2") + "+X";
 					Next = Current + 2;
 					break;
 
@@ -716,14 +1074,18 @@ namespace SnesDisassembler
 					break;
 
 				case 0xfd:
-					address = Data[Current + 1] | Data[Current + 2] << 8;
+					address = Data[Current + 1] | (Data[Current + 2] << 8);
 					Text = Current.ToString("X6") + " SubtractAbsoluteAddressPlusXIndexFromAccumulator " + address.ToString("X4");
+					Instruction = "Read";
+					Address = address.ToString("X4") + "+X";
 					Next = Current + 3;
 					break;
 
 				case 0xff:
 					address = Data[Current + 1] | Data[Current + 2] << 8 | Data[Current + 3] << 16;
 					Text = Current.ToString("X6") + " SubtractAbsoluteLongAddressPlusXIndexFromAccumulator " + address.ToString("X6");
+					Instruction = "Read";
+					Address = address.ToString("X6") + "+X";
 					Next = Current + 4;
 					break;
 
