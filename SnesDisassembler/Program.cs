@@ -301,7 +301,6 @@ namespace SnesDisassembler
 					Address = address.ToString("X6");
 					Next = Current + 3;
 					Branch = address;
-					System.Diagnostics.Debug.WriteLine(address.ToString("X6"));
 					break;
 
 				case 0x21:
@@ -319,7 +318,6 @@ namespace SnesDisassembler
 					Address = address.ToString("X6");
 					Next = Current + 4;
 					Branch = address;
-					System.Diagnostics.Debug.WriteLine(address.ToString("X6"));
 					break;
 
 				case 0x28:
@@ -856,6 +854,14 @@ namespace SnesDisassembler
 					Next = Current + 2;
 					break;
 
+				case 0xb7:
+					address = Data[Current + 1];
+					Text = Current.ToString("X6") + " CopyDirectAddressLongPointerPlusYIndexToAccumulator " + address.ToString("X2");
+					Instruction = "Read";
+					Address = "[" + address.ToString("X2") + "]+Y";
+					Next = Current + 2;
+					break;
+
 				case 0xb9:
 					address = Data[Current + 1] | (Data[Current + 2] << 8);
 					Text = Current.ToString("X6") + " CopyAbsoluteAddressPlusYIndexToAccumulator " + address.ToString("X4");
@@ -913,6 +919,11 @@ namespace SnesDisassembler
 					Instruction = "Read";
 					Address = address.ToString("X2");
 					Next = Current + 2;
+					break;
+
+				case 0xc8:
+					Text = Current.ToString("X6") + " IncrementYIndex";
+					Next = Current + 1;
 					break;
 
 				case 0xc9:
