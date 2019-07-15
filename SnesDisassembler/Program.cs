@@ -284,6 +284,14 @@ namespace SnesDisassembler
 					Next = Current + 2;
 					break;
 
+				case 0x16:
+					address = (int)Data[Current + 1];
+					Text = Current.ToString("X6") + " ShiftDirectAddressPlusXIndexLeft " + address.ToString("X2");
+					Instruction = "Write";
+					Address = address.ToString("X2");
+					Next = Current + 2;
+					break;
+
 				case 0x18:
 					Text = Current.ToString("X6") + " ClearCarryFlag";
 					Next = Current + 1;
@@ -612,9 +620,18 @@ namespace SnesDisassembler
 					break;
 
 				case 0x89:
-					value = Data[Current + 1];
-					Text = Current.ToString("X6") + " TestImmediate " + value.ToString("X2");
-					Next = Current + 2;
+					if ((Flags & 0x20) == 0)
+					{
+						value = Data[Current + 1] | Data[Current + 2] << 8;
+						Text = Current.ToString("X6") + " TestImmediate " + value.ToString("X4");
+						Next = Current + 3;
+					}
+					else
+					{
+						value = Data[Current + 1];
+						Text = Current.ToString("X6") + " TestImmediate " + value.ToString("X2");
+						Next = Current + 2;
+					}
 					break;
 
 				case 0x8a:
@@ -1007,6 +1024,14 @@ namespace SnesDisassembler
 					address = Data[Current + 1];
 					Text = Current.ToString("X6") + " SubtractDirectAddressFromAccumulator " + address.ToString("X2");
 					Instruction = "Read";
+					Address = address.ToString("X2");
+					Next = Current + 2;
+					break;
+
+				case 0xe6:
+					address = Data[Current + 1];
+					Text = Current.ToString("X6") + " IncrementDirectAddress " + address.ToString("X2");
+					Instruction = "Write";
 					Address = address.ToString("X2");
 					Next = Current + 2;
 					break;
